@@ -1,0 +1,22 @@
+.build/
+dist/
+.swiftpm/
+.DS_Store
+.superpowers/
+artifacts/
+website/node_modules/
+website/dist/
+
+# Local marketing work is separate from the open-source Mac app.
+website/
+design/
+docs/superpowers/
+
+# Local settings, credentials, and model downloads.
+.env
+.env.*
+*.pem
+*.p12
+*.mobileprovision
+models/
+*.bin
