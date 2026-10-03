@@ -28,16 +28,20 @@ xcode-select --install
 With [Homebrew](https://brew.sh) installed, install the transcription engine:
 
 ```sh
-brew install whisper-cpp
+brew install whisper.cpp
 ```
 
 You can also [build whisper.cpp from source](https://github.com/ggml-org/whisper.cpp#quick-start).
 
 ### 2. Download a model
 
-Download a compatible model using the [whisper.cpp model instructions](https://github.com/ggml-org/whisper.cpp/tree/master/models). **Large V3 Turbo** is the model used to test this app. Choose a multilingual model if you want automatic language detection; English-only models have `.en` in their names.
+Think Out Loud checks its own model folder, Vibe’s folder, Downloads, Documents, and `~/whisper.cpp/models` for compatible `.bin` models. It keeps your selected model when it is still available.
 
-The engine and model are separate downloads. They are not included in this repository. If you already use Vibe, Think Out Loud can detect its existing `ggml-large-v3-turbo.bin` model.
+If no model is found, open Settings and click **Download model**. This downloads **Large V3 Turbo** (about 1.5 GiB), shows progress, checks the file against its published checksum, and selects it automatically. You can cancel and retry. The model is saved in `~/Library/Application Support/ThinkOutLoud/models`.
+
+For another model, use **Local model & engine → Model** to select a download from the [whisper.cpp model collection](https://huggingface.co/ggerganov/whisper.cpp/tree/main). Choose a multilingual model for automatic language detection; English-only models have `.en` in their names.
+
+The engine and model are separate downloads and are not included in this repository. Settings offers **Install engine** if Homebrew is available. If it isn’t, **How to install** opens Homebrew’s instructions and copies `brew install whisper.cpp` for you to run in Terminal. Click **Check again** after installing.
 
 ### 3. Build and install the app
 
@@ -68,7 +72,7 @@ Closing Settings leaves the menu bar app running. Use **Quit** in its menu to ex
 
 ## Your recordings
 
-The app makes no network requests and has no telemetry or history database. Transcription starts after you stop recording; its speed depends on your Mac, model, and recording length. Recordings are limited to 30 minutes.
+Dictation runs locally and makes no network requests. Setup connects to Hugging Face only when you click **Download model**; installing the engine through Homebrew also requires internet. The app has no telemetry or history database. Transcription starts after you stop recording; its speed depends on your Mac, model, and recording length. Recordings are limited to 30 minutes.
 
 Successful dictation and cancellation delete the temporary audio. If transcription fails, the app keeps the recording available for **Retry** until you dismiss the error or quit. It cleans up leftover recordings from a crash the next time it opens.
 

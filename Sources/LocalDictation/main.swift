@@ -40,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.onStateChanged = { [weak self] in self?.updateMenu() }
         updateMenu()
         model.registerShortcut()
-        if !UserDefaults.standard.bool(forKey: "hasLaunched") || CommandLine.arguments.contains("--settings") {
+        if !model.dependenciesReady || !UserDefaults.standard.bool(forKey: "hasLaunched") || CommandLine.arguments.contains("--settings") {
             UserDefaults.standard.set(true, forKey: "hasLaunched")
             model.showSettings()
         }
@@ -135,6 +135,12 @@ if CommandLine.arguments.contains("--check-shortcut-options") {
     renderPreview(RecordingPanelContent(state: state, levels: [0.1, 0.3, 0.7, 0.9, 0.4, 0.2, 0.4, 0.8, 0.6, 0.3, 0.2, 0.1], clock: "00:08", message: "Your microphone disconnected. Reconnect it or choose another microphone. Retry transcribes the audio already recorded; Dismiss deletes it.", canRetry: true), size: Brand.panelSize(failed: state == .failed), destination: CommandLine.arguments[3])
 } else if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--render-logo" {
     renderPreview(BrandMark(size: 300).foregroundStyle(.black).frame(maxWidth: .infinity, maxHeight: .infinity).background(.white), size: NSSize(width: 512, height: 512), destination: CommandLine.arguments[2])
+} else if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--render-setup" {
+    let suite = "ThinkOutLoud-preview-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let model = AppController(defaults: defaults, discoverDependencies: false)
+    renderPreview(SettingsView(model: model), size: NSSize(width: 520, height: 840), destination: CommandLine.arguments[2])
 } else if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--render-design" {
     // Render the actual settings view without recording, clipboard writes or visible windows.
     let app = NSApplication.shared

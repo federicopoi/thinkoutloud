@@ -25,9 +25,16 @@ final class AppController: ObservableObject {
     @Published private(set) var spaceStopAvailable = false
     @Published private(set) var defaultInputName = "System microphone"
     @Published private(set) var defaultOutputName = "System speakers"
+    @Published var setupBusy = false
+    @Published var setupProgress: Double = 0
+    @Published var setupMessage = ""
+    @Published var setupError = ""
+    private var modelDownload: ModelDownload?
+    private var engineInstall: Process?
     var onStateChanged: (() -> Void)?
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+    private let discoverDependencies: Bool
     private let recorder = Recorder()
     private var workspace: SessionWorkspace?
     private var runner: WhisperRunner?
@@ -44,17 +51,18 @@ final class AppController: ObservableObject {
         DispatchQueue.main.async { self?.toggle() }
     }
 
-    init() {
-        AutomaticPreferences.migrate(in: UserDefaults.standard)
-        AutomaticPreferences.useShiftSpaceShortcut(in: UserDefaults.standard)
-        inputUID = UserDefaults.standard.string(forKey: "inputUID") ?? ""
-        outputUID = UserDefaults.standard.string(forKey: "outputUID") ?? ""
-        language = UserDefaults.standard.string(forKey: "language") ?? "auto"
-        playSound = UserDefaults.standard.object(forKey: "playSound") as? Bool ?? true
-        let vibeModel = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/github.com.thewh1teagle.vibe/ggml-large-v3-turbo.bin").path
-        modelPath = UserDefaults.standard.string(forKey: "modelPath") ?? (FileManager.default.fileExists(atPath: vibeModel) ? vibeModel : "")
-        enginePath = UserDefaults.standard.string(forKey: "enginePath") ?? (["/opt/homebrew/bin/whisper-cli", "/usr/local/bin/whisper-cli"].first { FileManager.default.isExecutableFile(atPath: $0) } ?? "")
-        if let data = UserDefaults.standard.data(forKey: "shortcut"), let saved = try? JSONDecoder().decode(Shortcut.self, from: data), saved.isValid {
+    init(defaults: UserDefaults = .standard, discoverDependencies: Bool = true) {
+        self.defaults = defaults
+        self.discoverDependencies = discoverDependencies
+        AutomaticPreferences.migrate(in: defaults)
+        AutomaticPreferences.useShiftSpaceShortcut(in: defaults)
+        inputUID = defaults.string(forKey: "inputUID") ?? ""
+        outputUID = defaults.string(forKey: "outputUID") ?? ""
+        language = defaults.string(forKey: "language") ?? "auto"
+        playSound = defaults.object(forKey: "playSound") as? Bool ?? true
+        modelPath = discoverDependencies ? SetupDiscovery.model(saved: defaults.string(forKey: "modelPath") ?? "") : ""
+        enginePath = discoverDependencies ? SetupDiscovery.engine(saved: defaults.string(forKey: "enginePath") ?? "") : ""
+        if let data = defaults.data(forKey: "shortcut"), let saved = try? JSONDecoder().decode(Shortcut.self, from: data), saved.isValid {
             shortcut = saved
         } else { shortcut = .defaultShortcut }
         SessionWorkspace.cleanupStaleSessions()
@@ -66,7 +74,7 @@ final class AppController: ObservableObject {
     }
 
     var dependenciesReady: Bool {
-        FileManager.default.isExecutableFile(atPath: enginePath) && FileManager.default.isReadableFile(atPath: modelPath)
+        FileManager.default.isExecutableFile(atPath: enginePath) && SetupDiscovery.isModel(modelPath)
     }
     var canRetry: Bool {
         guard state == .failed, let workspace else { return false }
@@ -125,6 +133,7 @@ final class AppController: ObservableObject {
 
     func start() {
         guard !state.isBusy else { return }
+        if setupBusy { showSettings(); return }
         workspace?.cleanup(); workspace = nil
         runner = nil
         sessionID = UUID()
@@ -275,6 +284,8 @@ final class AppController: ObservableObject {
     }
 
     func shutdown() {
+        modelDownload?.cancel()
+        engineInstall?.terminate()
         runner?.cancel(force: true)
         cancel()
         stopCapturingShortcut()
@@ -323,6 +334,93 @@ final class AppController: ObservableObject {
         sound?.play()
     }
 
+    var hasModel: Bool { SetupDiscovery.isModel(modelPath) }
+    var hasEngine: Bool { FileManager.default.isExecutableFile(atPath: enginePath) }
+    var hasHomebrew: Bool { SetupDiscovery.homebrew != nil }
+
+    func refreshSetup() {
+        guard !setupBusy, discoverDependencies else { return }
+        modelPath = SetupDiscovery.model(saved: modelPath)
+        enginePath = SetupDiscovery.engine(saved: enginePath)
+        onStateChanged?()
+    }
+
+    func downloadModel() {
+        guard !setupBusy, !state.isBusy else { return }
+        setupBusy = true; setupProgress = 0; setupError = ""
+        setupMessage = "Downloading Large V3 Turbo…"
+        modelDownload = ModelDownload(progress: { [weak self] progress in
+            self?.setupProgress = progress
+            if progress >= 1 { self?.setupMessage = "Checking model…" }
+        }, completion: { [weak self] result in
+            guard let self else { return }
+            self.setupBusy = false; self.modelDownload = nil
+            switch result {
+            case .success(let url):
+                self.modelPath = url.path
+                self.setupMessage = "Large V3 Turbo is ready."
+            case .failure(let error):
+                self.setupMessage = ""
+                if (error as NSError).code != NSURLErrorCancelled && !(error is CancellationError) {
+                    self.setupError = error.localizedDescription
+                }
+            }
+            self.onStateChanged?()
+        })
+        modelDownload?.start()
+    }
+
+    func cancelModelDownload() { modelDownload?.cancel() }
+
+    func installEngine() {
+        guard !setupBusy, !state.isBusy, let brew = SetupDiscovery.homebrew else { return }
+        setupBusy = true; setupError = ""; setupProgress = 0
+        setupMessage = "Installing the Whisper engine…"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: brew)
+        process.arguments = ["install", "whisper.cpp"]
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        environment["HOMEBREW_NO_AUTO_UPDATE"] = "1"
+        environment["HOMEBREW_NO_ENV_HINTS"] = "1"
+        process.environment = environment
+        // A file avoids a full pipe blocking Homebrew while it installs dependencies.
+        let log = FileManager.default.temporaryDirectory.appendingPathComponent("ThinkOutLoud-engine-\(UUID().uuidString).log")
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        guard let output = try? FileHandle(forWritingTo: log) else {
+            setupBusy = false; setupError = "Could not create an installation log."; return
+        }
+        process.standardOutput = output; process.standardError = output
+        process.terminationHandler = { [weak self] process in
+            try? output.close()
+            try? FileManager.default.removeItem(at: log)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.setupBusy = false; self.engineInstall = nil
+                self.refreshSetup()
+                self.setupMessage = ""
+                if process.terminationStatus == 0 && self.hasEngine {
+                    self.setupMessage = "Whisper engine is ready."
+                } else {
+                    self.setupError = "Engine installation failed. Try running brew install whisper.cpp in Terminal, then click Check again."
+                }
+            }
+        }
+        engineInstall = process
+        do { try process.run() }
+        catch {
+            try? output.close(); try? FileManager.default.removeItem(at: log)
+            engineInstall = nil; setupBusy = false; setupMessage = ""; setupError = error.localizedDescription
+        }
+    }
+
+    func openEngineInstructions() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("brew install whisper.cpp", forType: .string)
+        NSWorkspace.shared.open(URL(string: "https://brew.sh")!)
+        setupMessage = "Install Homebrew from brew.sh, then paste brew install whisper.cpp into Terminal. Click Check again when done."
+    }
+
     func chooseFile(model: Bool) {
         let chooser = NSOpenPanel()
         chooser.canChooseDirectories = false
@@ -333,11 +431,19 @@ final class AppController: ObservableObject {
             chooser.directoryURL = URL(fileURLWithPath: modelPath.isEmpty ? FileManager.default.homeDirectoryForCurrentUser.path : modelPath).deletingLastPathComponent()
         } else { chooser.directoryURL = URL(fileURLWithPath: "/opt/homebrew/bin") }
         if chooser.runModal() == .OK, let url = chooser.url {
-            if model { modelPath = url.path } else { enginePath = url.path }
+            if model {
+                guard SetupDiscovery.isModel(url.path) else {
+                    setupError = "Choose a Whisper ggml model in .bin format."; return
+                }
+                modelPath = url.path
+            } else { enginePath = url.path }
+            setupError = ""
+            onStateChanged?()
         }
     }
 
     func showSettings() {
+        refreshSetup()
         refreshDevices()
         if settingsWindow == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Brand.settingsSize.width, height: Brand.settingsSize.height), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)

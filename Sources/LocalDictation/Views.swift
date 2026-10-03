@@ -69,6 +69,7 @@ struct SettingsView: View {
                               systemImage: model.dependenciesReady ? "checkmark.circle" : "exclamationmark.circle")
                             .font(.system(size: 11)).foregroundStyle(Palette.muted)
                     }
+                    setupControls
                     HStack {
                         Text("Language").font(.system(size: 12))
                         Spacer()
@@ -87,7 +88,7 @@ struct SettingsView: View {
                         VStack(spacing: 10) {
                             fileRow(title: "Model", path: model.modelPath, action: { model.chooseFile(model: true) })
                             fileRow(title: "Engine", path: model.enginePath, action: { model.chooseFile(model: false) })
-                        }.padding(.top, 10)
+                        }.padding(.top, 10).disabled(model.setupBusy)
                     }.font(.system(size: 11)).foregroundStyle(Palette.muted)
                 }.disabled(model.state.isBusy)
 
@@ -97,7 +98,7 @@ struct SettingsView: View {
                         Text(model.state == .recording ? "Stop and copy" : model.state == .transcribing ? "Transcribing…" : "Start recording")
                     }.font(.system(size: 13, weight: .medium)).frame(maxWidth: .infinity).padding(.vertical, 13)
                 }.buttonStyle(.plain).foregroundStyle(.white).background(.black, in: RoundedRectangle(cornerRadius: 9))
-                    .disabled(model.state == .starting || model.state == .transcribing || model.capturingShortcut)
+                    .disabled(!model.dependenciesReady || model.setupBusy || model.state == .starting || model.state == .transcribing || model.capturingShortcut)
                     .opacity(model.state == .starting || model.state == .transcribing || model.capturingShortcut ? 0.5 : 1)
 
                 if !model.lastTranscript.isEmpty {
@@ -117,7 +118,72 @@ struct SettingsView: View {
             }.padding(28)
         }.foregroundStyle(Palette.ink).tint(.black).background(Palette.background)
             .preferredColorScheme(.light)
-            .onAppear { showAdvanced = !model.dependenciesReady }
+            .onAppear { model.refreshSetup() }
+    }
+
+    private var setupControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !model.dependenciesReady {
+                Text("Set up once. Then dictate offline.")
+                    .font(.system(size: 15, weight: .medium))
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.hasEngine ? "Whisper engine found" : "1. Install the Whisper engine")
+                            .font(.system(size: 12, weight: .medium))
+                        if !model.hasEngine {
+                            Text(model.hasHomebrew ? "Uses Homebrew to install." : "Homebrew is needed to install the engine.")
+                                .font(.system(size: 11)).foregroundStyle(Palette.muted)
+                        }
+                    }
+                    Spacer()
+                    if !model.hasEngine {
+                        Button(model.hasHomebrew ? "Install engine" : "How to install") {
+                            if model.hasHomebrew { model.installEngine() } else { model.openEngineInstructions() }
+                        }.buttonStyle(QuietButtonStyle()).disabled(model.setupBusy)
+                    }
+                }
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.hasModel ? "Model found" : "2. Large V3 Turbo")
+                            .font(.system(size: 12, weight: .medium))
+                        Text(model.hasModel ? URL(fileURLWithPath: model.modelPath).lastPathComponent : "Recommended · 1.5 GiB · Multiple languages")
+                            .font(.system(size: 11)).foregroundStyle(Palette.muted)
+                            .lineLimit(2)
+                    }
+                    Spacer()
+                    if !model.hasModel {
+                        Button("Download model") { model.downloadModel() }
+                            .buttonStyle(QuietButtonStyle()).disabled(model.setupBusy)
+                    }
+                }
+                if model.setupBusy {
+                    if model.setupMessage.hasPrefix("Installing") {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        ProgressView(value: model.setupProgress).tint(.black)
+                        HStack {
+                            Text(model.setupProgress >= 1 ? "Verifying download" : "\(Int(model.setupProgress * 100))% downloaded")
+                                .font(.system(size: 11)).foregroundStyle(Palette.muted)
+                            Spacer()
+                            Button("Cancel") { model.cancelModelDownload() }.buttonStyle(QuietButtonStyle())
+                        }
+                    }
+                } else {
+                    Button("Check again") { model.refreshSetup() }.buttonStyle(QuietButtonStyle())
+                }
+            } else {
+                Text(URL(fileURLWithPath: model.modelPath).lastPathComponent)
+                    .font(.system(size: 11)).foregroundStyle(Palette.muted)
+            }
+            if !model.setupMessage.isEmpty {
+                Text(model.setupMessage).font(.system(size: 11)).foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !model.setupError.isEmpty {
+                Text(model.setupError).font(.system(size: 11))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     private func sectionTitle(_ title: String) -> some View {
